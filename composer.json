@@ -1,0 +1,24 @@
+{
+    "name": "tacticmedia/scim-server-bundle",
+    "description": "Symfony bundle for the tacticmedia/scim-server SCIM 2.0 server library.",
+    "license": "MIT",
+    "type": "symfony-bundle",
+    "keywords": [
+        "provisioning",
+        "scim",
+        "symfony",
+        "symfony-bundle"
+    ],
+    "require": {
+        "php": ">=8.5",
+        "symfony/config": "^8.1",
+        "symfony/dependency-injection": "^8.1",
+        "symfony/http-kernel": "^8.1",
+        "tacticmedia/scim-server": "^1.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "TacticMedia\\ScimServerBundle\\": "src/"
+        }
+    }
+}
