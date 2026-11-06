@@ -34,11 +34,11 @@ final readonly class OrmKeyset
 {
     /**
      * Types whose database values are JSON scalars that compare equal to the stored value. Not smallfloat: a 4-byte
-     * float is not equal to its decimal text.
+     * float is not equal to its decimal text. The names as strings are types that DBAL 4.5 or the Symfony bridge add.
      */
     private const array SCALAR_TYPES = [
         Types::ASCII_STRING, Types::BIGINT, Types::BOOLEAN, Types::DATE_MUTABLE, Types::DATE_IMMUTABLE,
-        Types::DATETIME_MUTABLE, Types::DATETIME_IMMUTABLE, Types::DATETIME_UTC_MUTABLE, Types::DATETIME_UTC_IMMUTABLE,
+        Types::DATETIME_MUTABLE, Types::DATETIME_IMMUTABLE, 'datetime_utc', 'datetime_utc_immutable',
         Types::ENUM, Types::FLOAT, Types::GUID, Types::INTEGER, Types::SMALLINT, Types::STRING, Types::TEXT,
         Types::TIME_MUTABLE, Types::TIME_IMMUTABLE, 'date_point', 'day_point', 'time_point',
     ];
