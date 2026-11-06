@@ -47,7 +47,7 @@ final readonly class OrmCollectionDeltas
     public function supports(EntityManagerInterface $manager, ResourceMapping $mapping, AttributeMapping $collection): bool
     {
         $metadata = $manager->getClassMetadata($mapping->class);
-        $association = !$collection->method && $metadata->hasAssociation($collection->member) ? $metadata->getAssociationMapping($collection->member) : null;
+        $association = $metadata->hasAssociation($collection->member) ? $metadata->getAssociationMapping($collection->member) : null;
 
         return $metadata->isVersioned
             && $association instanceof ManyToManyOwningSideMapping
@@ -108,7 +108,7 @@ final readonly class OrmCollectionDeltas
         $dql = \sprintf('SELECT t.%1$s AS scim_id FROM %2$s t WHERE t.%1$s IN (%%s)%3$s', $target->id->member, $this->association($manager, $mapping, $collection)->targetEntity, $this->notDeleted($target, 't'));
         $known = $this->present($ids, $target, $targetType, fn (ArrayCollection $parameters, string $placeholders): array => $this->column($manager->createQuery(\sprintf($dql, $placeholders))->setParameters($parameters)));
 
-        foreach (array_chunk($this->convert($target, $known), self::ID_CHUNK) as $chunk) {
+        foreach (array_chunk($this->convert($target, $known, $targetType), self::ID_CHUNK) as $chunk) {
             $manager->getConnection()->executeStatement(
                 \sprintf('INSERT INTO %s (%s, %s) VALUES %s', $table, $ownerColumn, $targetColumn, implode(', ', array_fill(0, \count($chunk), '(?, ?)'))),
                 array_merge(...array_map(static fn (mixed $value): array => [$owner, $value], $chunk)),
@@ -126,7 +126,7 @@ final readonly class OrmCollectionDeltas
     {
         [$table, $ownerColumn, $targetColumn, $owner, $ownerType, $targetType] = $this->joinTable($manager, $mapping, $object, $collection);
 
-        foreach (array_chunk($this->convert($this->target($collection), $ids), self::ID_CHUNK) as $chunk) {
+        foreach (array_chunk($this->convert($this->target($collection), $ids, $targetType), self::ID_CHUNK) as $chunk) {
             $manager->getConnection()->executeStatement(
                 \sprintf('DELETE FROM %s WHERE %s = ? AND %s IN (%s)', $table, $ownerColumn, $targetColumn, implode(', ', array_fill(0, \count($chunk), '?'))),
                 [$owner, ...$chunk],
@@ -178,7 +178,7 @@ final readonly class OrmCollectionDeltas
      */
     private function present(array $ids, ResourceMapping $target, ?string $type, \Closure $query): array
     {
-        $converted = $this->converted($target, $ids);
+        $converted = $this->converted($target, $ids, $type);
         $found = [];
 
         foreach (array_chunk(array_column($converted, 1), self::ID_CHUNK) as $values) {
@@ -194,10 +194,11 @@ final readonly class OrmCollectionDeltas
 
     /**
      * @param list<string> $ids
+     * @param string|null  $type the Doctrine type of the target id
      *
-     * @return list<array{string, mixed}> each id that converts, with its id member value
+     * @return list<array{string, mixed}> each id that converts to a value that the id column holds, with that value
      */
-    private function converted(ResourceMapping $target, array $ids): array
+    private function converted(ResourceMapping $target, array $ids, ?string $type): array
     {
         $converter = $this->converters->get($target->id->converter ?? IdConverter::class);
         $context = new ConversionContext($target, $target->id);
@@ -211,7 +212,7 @@ final readonly class OrmCollectionDeltas
             }
         }
 
-        return $converted;
+        return array_values(array_filter($converted, static fn (array $pair): bool => OrmTypes::holds($type, $pair[1])));
     }
 
     /**
@@ -219,9 +220,9 @@ final readonly class OrmCollectionDeltas
      *
      * @return list<mixed>
      */
-    private function convert(ResourceMapping $target, array $ids): array
+    private function convert(ResourceMapping $target, array $ids, ?string $type): array
     {
-        return array_column($this->converted($target, $ids), 1);
+        return array_column($this->converted($target, $ids, $type), 1);
     }
 
     private function scimId(ResourceMapping $target, mixed $value): string

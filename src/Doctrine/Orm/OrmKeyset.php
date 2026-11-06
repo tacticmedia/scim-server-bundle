@@ -22,7 +22,6 @@ use TacticMedia\ScimServerBundle\Mapping\ResourceMapping;
 use TacticMedia\ScimServerBundle\Object\CursorObjectPage;
 use TacticMedia\ScimServerBundle\Query\ObjectQuery;
 use TacticMedia\ScimServerBundle\Query\Plan\Node;
-use TacticMedia\ScimServerBundle\Query\Planning\MemberConditions;
 
 /**
  * Keyset pages over the order of {@see OrmQueryTranslator::orderBy()}. The position holds the database value of each
@@ -34,12 +33,13 @@ final readonly class OrmKeyset
 {
     /**
      * Types whose database values are JSON scalars that compare equal to the stored value. Not smallfloat: a 4-byte
-     * float is not equal to its decimal text. The names as strings are types that DBAL 4.5 or the Symfony bridge add.
+     * float is not equal to its decimal text. A name as a string is a type that a DBAL 4 version after 4.0 or the
+     * Symfony bridge adds, so that the list loads on every DBAL 4 version.
      */
     private const array SCALAR_TYPES = [
         Types::ASCII_STRING, Types::BIGINT, Types::BOOLEAN, Types::DATE_MUTABLE, Types::DATE_IMMUTABLE,
         Types::DATETIME_MUTABLE, Types::DATETIME_IMMUTABLE, 'datetime_utc', 'datetime_utc_immutable',
-        Types::ENUM, Types::FLOAT, Types::GUID, Types::INTEGER, Types::SMALLINT, Types::STRING, Types::TEXT,
+        'enum', Types::FLOAT, Types::GUID, Types::INTEGER, Types::SMALLINT, Types::STRING, Types::TEXT,
         Types::TIME_MUTABLE, Types::TIME_IMMUTABLE, 'date_point', 'day_point', 'time_point',
     ];
     private const string KEY = 'scim_k';
@@ -110,7 +110,7 @@ final readonly class OrmKeyset
         return match (true) {
             \count($memberTypes) < \count($query->sortBy) => null,
             [] === $memberTypes => [],
-            default => [Types::INTEGER, array_all($query->sortBy, MemberConditions::holdsString(...)) ? Types::STRING : $memberTypes[0]],
+            default => [Types::INTEGER, array_all($query->sortBy, static fn (AttributeMapping $member): bool => OrmTypes::holdsText($member, $metadata)) ? Types::STRING : $memberTypes[0]],
         };
     }
 

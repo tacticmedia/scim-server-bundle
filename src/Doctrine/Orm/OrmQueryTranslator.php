@@ -6,6 +6,7 @@ namespace TacticMedia\ScimServerBundle\Doctrine\Orm;
 
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\ORM\Mapping\InverseSideMapping;
 use Doctrine\ORM\QueryBuilder;
 use TacticMedia\ScimServer\Exception\ScimException;
 use TacticMedia\ScimServer\Filter\ComparisonOperator;
@@ -23,16 +24,18 @@ use TacticMedia\ScimServerBundle\Query\Plan\IsPresent;
 use TacticMedia\ScimServerBundle\Query\Plan\Negate;
 use TacticMedia\ScimServerBundle\Query\Plan\Node;
 use TacticMedia\ScimServerBundle\Query\Planning\FilterRejection;
-use TacticMedia\ScimServerBundle\Query\Planning\MemberConditions;
 
 /**
  * Translates a plan tree and a sort key to DQL. A comparison holds only for a present value: it is guarded with
- * IS NOT NULL on a nullable column and with <> '' on a string. Thus every condition is true or false, never unknown,
- * and NOT gives true for an absent value, as the library does. A related object of a mapping with #[ScimSoftDelete]
- * exists only while it is not soft-deleted.
+ * IS NOT NULL on a nullable column and with <> '' on a string in a character column. Thus every condition is true or
+ * false, never unknown, and NOT gives true for an absent value, as the library does. A comparison with a value that
+ * the column cannot hold is false. A related object of a mapping with #[ScimSoftDelete] exists only while it is not
+ * soft-deleted.
  */
 final readonly class OrmQueryTranslator
 {
+    private const string NO_MATCH = '1 = 0';
+
     public function __construct(
         private MappingRegistry $mappings,
     ) {
@@ -104,7 +107,7 @@ final readonly class OrmQueryTranslator
 
         return [
             ['CASE WHEN '.implode(' OR ', array_column($keys, 0)).' THEN 0 ELSE 1 END', $direction],
-            [$this->firstPresent($keys, array_all($members, MemberConditions::holdsString(...))), $direction],
+            [$this->firstPresent($keys, array_all($members, static fn (AttributeMapping $member): bool => OrmTypes::holdsText($member, $context->metadata($alias)))), $direction],
             $id,
         ];
     }
@@ -112,7 +115,8 @@ final readonly class OrmQueryTranslator
     /**
      * Joins the element whose member sorts the owner: the primary element with the lowest identifier, else the
      * element with the lowest identifier. That is the primary element, else the first element, of a collection
-     * ordered by its identifier, which the first-use checks require.
+     * ordered by its identifier, which the first-use checks require. The join compares the element identifier with a
+     * subquery, so that the owner has one row also for a ManyToMany association.
      *
      * @return string the alias of the element
      */
@@ -122,17 +126,18 @@ final readonly class OrmQueryTranslator
         $primary = $collection->element?->attributeAt($collection->path->withSubAttribute('primary'));
         $class = $metadata->getAssociationTargetClass($collection->member);
 
-        return $context->join(OrmQueryContext::ROOT.'.'.$collection->member, $class, static function (string $alias) use ($metadata, $collection, $primary, $class, $context): string {
-            $number = $context->subquery($class);
+        return $context->join($class, static function (string $alias) use ($metadata, $collection, $primary, $class, $context): string {
+            [$key, $other] = [$context->subquery($class), $context->subquery($class)];
             $id = $context->metadata($alias)->getSingleIdentifierFieldName();
-            $before = \sprintf('t%d.%s < %s.%2$s', $number, $id, $alias);
+            $elements = static fn (int $number): string => \sprintf('%1$s o%2$d JOIN o%2$d.%3$s t%2$d WHERE o%2$d = %4$s', $metadata->getName(), $number, $collection->member, OrmQueryContext::ROOT);
+            $before = \sprintf('t%d.%s < t%d.%2$s', $other, $id, $key);
 
             if ($primary instanceof AttributeMapping) {
-                $rank = static fn (string $element): string => \sprintf('CASE WHEN %s.%s = true THEN 0 ELSE 1 END', $element, $primary->member);
-                $before = \sprintf('(%1$s < %2$s OR (%1$s = %2$s AND %3$s))', $rank('t'.$number), $rank($alias), $before);
+                $rank = static fn (int $number): string => \sprintf('CASE WHEN t%d.%s = true THEN 0 ELSE 1 END', $number, $primary->member);
+                $before = \sprintf('(%1$s < %2$s OR (%1$s = %2$s AND %3$s))', $rank($other), $rank($key), $before);
             }
 
-            return \sprintf('NOT EXISTS (SELECT 1 FROM %1$s o%2$d JOIN o%2$d.%3$s t%2$d WHERE o%2$d = %4$s AND %5$s)', $metadata->getName(), $number, $collection->member, OrmQueryContext::ROOT, $before);
+            return \sprintf('%s.%s = (SELECT t%d.%2$s FROM %s AND NOT EXISTS (SELECT 1 FROM %s AND %s))', $alias, $id, $key, $elements($key), $elements($other), $before);
         });
     }
 
@@ -149,15 +154,18 @@ final readonly class OrmQueryTranslator
         $metadata = $context->metadata($alias);
         $member = $node->relation->member;
 
-        if ($node->relation->method || !$metadata->hasAssociation($member)) {
+        if (!$metadata->hasAssociation($member)) {
             throw FilterRejection::notFilterable($node->relation->path);
         }
 
-        $related = $metadata->getAssociationTargetClass($member);
+        $association = $metadata->getAssociationMapping($member);
+        $related = $association->targetEntity;
         $number = $context->subquery($related);
-        $from = $metadata->isCollectionValuedAssociation($member)
-            ? \sprintf('%1$s o%2$d JOIN o%2$d.%3$s t%2$d WHERE o%2$d = %4$s', $metadata->getName(), $number, $member, $alias)
-            : \sprintf('%1$s t%2$d WHERE t%2$d = %3$s.%4$s', $related, $number, $alias, $member);
+        $from = match (true) {
+            $association->isToMany() => \sprintf('%1$s o%2$d JOIN o%2$d.%3$s t%2$d WHERE o%2$d = %4$s', $metadata->getName(), $number, $member, $alias),
+            $association instanceof InverseSideMapping => \sprintf('%1$s t%2$d WHERE t%2$d.%3$s = %4$s', $related, $number, $association->mappedBy, $alias),
+            default => \sprintf('%1$s t%2$d WHERE t%2$d = %3$s.%4$s', $related, $number, $alias, $member),
+        };
         $guard = null === $node->relation->targetType ? null : self::notDeleted($this->mappings->get($node->relation->targetType), 't'.$number);
         $condition = $node->condition instanceof Node ? $this->condition($node->condition, $context, 't'.$number) : null;
 
@@ -168,19 +176,25 @@ final readonly class OrmQueryTranslator
     {
         $field = $this->field($operand, $context, $alias) ?? throw FilterRejection::notFilterable($operand->path);
 
-        return MemberConditions::holdsString($operand) ? \sprintf("(%s IS NOT NULL AND %1\$s <> '')", $field) : $field.' IS NOT NULL';
+        return OrmTypes::holdsText($operand, $context->metadata($alias)) ? \sprintf("(%s IS NOT NULL AND %1\$s <> '')", $field) : $field.' IS NOT NULL';
     }
 
     private function compare(Compare $node, OrmQueryContext $context, string $alias): string
     {
         $operand = $node->operand;
         $field = $this->field($operand, $context, $alias) ?? throw FilterRejection::notFilterable($operand->path);
-        $fold = $this->foldsCase($operand);
+        $metadata = $context->metadata($alias);
+
+        if (!$node->operator->isSubstring() && !OrmTypes::holds($metadata->getTypeOfField($operand->member), $node->value)) {
+            return self::NO_MATCH;
+        }
+
+        $fold = $this->foldsCase($operand, $context, $alias);
         $comparison = \sprintf('%s %s %s', $this->fold($field, $fold), $this->operator($node->operator), $this->fold($this->parameter($node, $context, $alias), $fold));
         $comparison .= $node->operator->isSubstring() ? " ESCAPE '!'" : '';
         $guards = array_keys(array_filter([
-            $field.' IS NOT NULL' => null !== $operand->dqlExpression || $context->metadata($alias)->isNullable($operand->member),
-            $field." <> ''" => MemberConditions::holdsString($operand),
+            $field.' IS NOT NULL' => null !== $operand->dqlExpression || $metadata->isNullable($operand->member),
+            $field." <> ''" => OrmTypes::holdsText($operand, $metadata),
         ]));
 
         return [] === $guards ? $comparison : '('.implode(' AND ', [...$guards, $comparison]).')';
@@ -231,9 +245,9 @@ final readonly class OrmQueryTranslator
         return $fold ? 'LOWER('.$expression.')' : $expression;
     }
 
-    private function foldsCase(AttributeMapping $operand): bool
+    private function foldsCase(AttributeMapping $operand, OrmQueryContext $context, string $alias): bool
     {
-        return \in_array($operand->definition->type, [AttributeType::String, AttributeType::Reference], true) && !$operand->definition->caseExact;
+        return \in_array($operand->definition->type, [AttributeType::String, AttributeType::Reference], true) && !$operand->definition->caseExact && OrmTypes::holdsText($operand, $context->metadata($alias));
     }
 
     /**
@@ -245,7 +259,7 @@ final readonly class OrmQueryTranslator
     {
         $field = $this->field($member, $context, $alias) ?? throw ScimException::invalidValue(\sprintf("sortBy '%s' is not supported.", $member->path));
 
-        return [$this->isPresent($member, $context, $alias), $this->fold($field, $this->foldsCase($member))];
+        return [$this->isPresent($member, $context, $alias), $this->fold($field, $this->foldsCase($member, $context, $alias))];
     }
 
     /**

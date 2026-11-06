@@ -151,6 +151,7 @@ return static function (ContainerConfigurator $container, ContainerBuilder $buil
                 service('tacticmedia_scim_server.store_locator'),
                 service('tacticmedia_scim_server.factory_locator'),
                 service('tacticmedia_scim_server.converter_locator'),
+                abstract_arg('repository service of each mapped resource type, set by RepositoryPass'),
             ])
             ->tag('console.command')
     ;

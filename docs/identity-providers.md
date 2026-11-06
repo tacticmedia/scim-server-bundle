@@ -69,11 +69,12 @@ shows its real list. Map each row of that list, or delete the row in Entra.
 
 | Entra attribute | SCIM path | Mapping |
 | --- | --- | --- |
-| `displayName` | `displayName` | `#[ScimAttribute('displayName', uniqueness: Uniqueness::Server)]` |
+| `displayName` | `displayName` | `#[ScimAttribute('displayName')]` |
 | `members` | `members` | `#[ScimAttribute('members[type eq "User"]')]` on a collection of users |
 | `objectId` | `externalId` | `#[ScimAttribute('externalId')]` |
 
-- Entra matches groups with `displayName eq "..."`. Microsoft requires a unique `displayName`.
+- Entra matches groups with `displayName eq "..."`. Microsoft requires a unique `displayName`. The bundle publishes it
+  as unique by default, so a duplicate name gives 409 `uniqueness`.
 - A member id that no mapped collection finds gives 400 `invalidValue`. When a group has groups as members, also map
   `members[type eq "Group"]` ([References and members](index.md#references-and-members)).
 

@@ -9,6 +9,7 @@ use Symfony\Component\DependencyInjection\ChildDefinition;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Definition;
 use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
+use Symfony\Component\DependencyInjection\Parameter;
 use Symfony\Component\HttpKernel\Bundle\AbstractBundle;
 use Symfony\Component\RateLimiter\RateLimiterFactory;
 use Symfony\Component\RateLimiter\Storage\CacheStorage;
@@ -31,6 +32,8 @@ use function Symfony\Component\DependencyInjection\Loader\Configurator\service;
  */
 final class TacticMediaScimServerBundle extends AbstractBundle
 {
+    public const string CURSOR_KEY_PARAMETER = 'tacticmedia_scim_server.cursor_key';
+
     #[\Override]
     protected string $extensionAlias = 'tacticmedia_scim_server';
 
@@ -73,7 +76,7 @@ final class TacticMediaScimServerBundle extends AbstractBundle
 
         $this->loadRateLimit($config['rate_limit'], $container);
         $this->loadMe($config['me'], $container);
-        $this->loadPagination($config['pagination'], $container);
+        $this->loadPagination($config['pagination'], $container, $builder);
 
         $builder->registerAttributeForAutoconfiguration(ScimResource::class, static function (ChildDefinition $definition): void {
             $definition->addResourceTag(MappingPass::RESOURCE_TAG);
@@ -141,13 +144,24 @@ final class TacticMediaScimServerBundle extends AbstractBundle
     /**
      * @param PaginationConfig $pagination
      */
-    private function loadPagination(array $pagination, ContainerConfigurator $container): void
+    private function loadPagination(array $pagination, ContainerConfigurator $container, ContainerBuilder $builder): void
     {
-        if ($pagination['cursor']['enabled']) {
-            $container->services()->get('tacticmedia_scim_server.server')
-                ->arg('$cursorKey', $pagination['cursor']['key'])
-                ->arg('$clock', service('clock')->nullOnInvalid())
-            ;
+        if (!$pagination['cursor']['enabled']) {
+            return;
         }
+
+        // The default keeps kernel.secret unresolved until run time, so that a container without it still builds.
+        $usesKernelSecret = '%kernel.secret%' === $pagination['cursor']['key'];
+
+        if (!$usesKernelSecret) {
+            $builder->setParameter(self::CURSOR_KEY_PARAMETER, $pagination['cursor']['key']);
+            $builder->parameterCannotBeEmpty(self::CURSOR_KEY_PARAMETER, 'The tacticmedia_scim_server option pagination.cursor.key is empty. Give it a value, or set pagination.cursor: false.');
+        }
+
+        // A Parameter, not "%...%", so that the container checks an environment variable when it builds the server.
+        $container->services()->get('tacticmedia_scim_server.server')
+            ->arg('$cursorKey', new Parameter($usesKernelSecret ? 'kernel.secret' : self::CURSOR_KEY_PARAMETER))
+            ->arg('$clock', service('clock')->nullOnInvalid())
+        ;
     }
 }

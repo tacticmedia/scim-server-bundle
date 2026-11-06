@@ -124,11 +124,13 @@ final readonly class AttributeCompiler
     private function checkUniqueness(Member $member, MappingKind $kind, ResolvedPath $path, AttributeDefinition $definition): void
     {
         $attribute = $path->attribute->attribute;
+        $optOut = $member->attribute->uniqueness instanceof Uniqueness ? 'remove uniqueness:' : 'set uniqueness: Uniqueness::None';
 
         $problem = match (true) {
             Uniqueness::None === $definition->uniqueness, $path->isId() => null,
             $path->attribute->subAttribute instanceof AttributeDefinition, $attribute->multiValued, AttributeType::Complex === $attribute->type => 'has uniqueness:, which the server checks only on a single-valued attribute that is not complex. Remove uniqueness:.',
-            MappingKind::Computed === $kind, Mutability::WriteOnly === $definition->mutability => 'is unique, so the server checks it with a filter, but a method or writeOnly mapping cannot be filtered. Map a property that is not writeOnly, or remove uniqueness:.',
+            MappingKind::Computed === $kind => \sprintf('is unique, so the server checks the value of each write, but a method mapping is readOnly and no client writes it. Map a property, or %s.', $optOut),
+            Mutability::WriteOnly === $definition->mutability => \sprintf('is unique, so the server checks it with an "eq" filter, but a writeOnly attribute cannot be filtered. Map an attribute that is not writeOnly, or %s.', $optOut),
             default => null,
         };
 

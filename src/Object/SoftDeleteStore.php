@@ -8,7 +8,8 @@ use TacticMedia\ScimServerBundle\Mapping\ResourceMapping;
 use TacticMedia\ScimServerBundle\Query\Plan\Node;
 
 /**
- * An ObjectStore that finds soft-deleted objects, so that a create can revive one.
+ * An ObjectStore that finds soft-deleted objects, so that a create can revive one. A revive calls transactional()
+ * inside transactional(): when the inner $write returns, query() must see the objects that it updated.
  */
 interface SoftDeleteStore extends ObjectStore
 {

@@ -25,7 +25,7 @@ final class OrmQueryContext
 
     private int $subqueries = 0;
 
-    /** @var list<array{string, string, string}> association, alias, condition */
+    /** @var list<array{class-string, string, string}> class, alias, condition */
     private array $joins = [];
 
     /**
@@ -63,7 +63,7 @@ final class OrmQueryContext
     }
 
     /**
-     * Reserves the alias s<N> for an entity of $relatedClass, joined to the root with LEFT JOIN $association WITH the
+     * Reserves the alias s<N> for an entity of $relatedClass, joined to the root with LEFT JOIN $relatedClass WITH the
      * condition that $condition gives for the alias.
      *
      * @param class-string             $relatedClass
@@ -71,17 +71,17 @@ final class OrmQueryContext
      *
      * @return string the alias, "s<N>"
      */
-    public function join(string $association, string $relatedClass, \Closure $condition): string
+    public function join(string $relatedClass, \Closure $condition): string
     {
         $alias = 's'.\count($this->joins);
         $this->metadata[$alias] = $this->entityManager->getClassMetadata($relatedClass);
-        $this->joins[] = [$association, $alias, $condition($alias)];
+        $this->joins[] = [$relatedClass, $alias, $condition($alias)];
 
         return $alias;
     }
 
     /**
-     * @return list<array{string, string, string}> association, alias, condition
+     * @return list<array{class-string, string, string}> class, alias, condition
      */
     public function joins(): array
     {

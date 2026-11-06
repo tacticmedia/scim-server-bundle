@@ -61,7 +61,7 @@ final readonly class CollectionDeltas
             $groups[strtolower((string) $attribute->path)][] = $attribute;
         }
 
-        return array_filter($groups, static fn (array $collections): bool => self::takesSteps($collections[0]->definition) && array_all($collections, static fn (AttributeMapping $collection): bool => $collection->writable && $store->supportsDeltas($mapping, $collection)));
+        return array_filter($groups, static fn (array $collections): bool => self::takesSteps($collections[0]->definition) && array_all($collections, static fn (AttributeMapping $collection): bool => $store->supportsDeltas($mapping, $collection)));
     }
 
     /**

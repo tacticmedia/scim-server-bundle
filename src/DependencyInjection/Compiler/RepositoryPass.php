@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace TacticMedia\ScimServerBundle\DependencyInjection\Compiler;
 
+use Symfony\Component\DependencyInjection\Argument\ServiceLocatorArgument;
 use Symfony\Component\DependencyInjection\ChildDefinition;
 use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
@@ -20,7 +21,8 @@ use TacticMedia\ScimServerBundle\Schema\RawResourceTypeLoader;
 
 /**
  * Registers the repository service of each resource type, tagged {@see self::REPOSITORY_TAG}: an
- * ObjectResourceRepository per mapped class and an alias per raw repository. Then gives the server every type.
+ * ObjectResourceRepository per mapped class and an alias per raw repository. Then gives the server every type, and
+ * debug:scim the repository service of each mapped type.
  * Runs after {@see MappingPass}.
  */
 final readonly class RepositoryPass implements CompilerPassInterface
@@ -51,11 +53,17 @@ final readonly class RepositoryPass implements CompilerPassInterface
             throw new MappingException($errors);
         }
 
+        $mappedRepositories = [];
+
         foreach ($mapped as [, $type]) {
-            $container->setDefinition(self::ID_PREFIX.strtolower($type->name), new ChildDefinition('tacticmedia_scim_server.object_repository'))
+            $id = self::ID_PREFIX.strtolower($type->name);
+            $container->setDefinition($id, new ChildDefinition('tacticmedia_scim_server.object_repository'))
                 ->replaceArgument(0, $type->name)
                 ->addTag(self::REPOSITORY_TAG, ['name' => $type->name]);
+            $mappedRepositories[$type->name] = new Reference($id);
         }
+
+        $container->getDefinition('tacticmedia_scim_server.command.debug')->replaceArgument(6, new ServiceLocatorArgument($mappedRepositories));
 
         $repositoryClasses = [];
 

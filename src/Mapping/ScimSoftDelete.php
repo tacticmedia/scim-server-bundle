@@ -12,11 +12,12 @@ namespace TacticMedia\ScimServerBundle\Mapping;
 final readonly class ScimSoftDelete
 {
     /**
-     * @param bool $revive true: a create whose unique attributes match a soft-deleted object restores that object and
-     *                     writes the document onto it; false: the create stores a new object
+     * @param bool $revive false: a create stores a new object; true: a create whose unique attributes match a
+     *                     soft-deleted object restores that object, removes every link to it and from it, and writes
+     *                     the document onto it
      */
     public function __construct(
-        public bool $revive = true,
+        public bool $revive = false,
     ) {
     }
 }

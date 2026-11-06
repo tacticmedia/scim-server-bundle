@@ -67,8 +67,7 @@ Do the sections Configuration, Routes and Firewall of `docs/index.md`. Keep thes
    `default:`.
 4. Give each reference collection, for example `members[type eq "User"]`, an adder and a remover.
 5. Map `meta.created` and `meta.lastModified` when the entity has creation and change dates.
-6. Give `userName` a unique index. Give the group `displayName` the mapping `uniqueness: Uniqueness::Server` and a
-   unique index.
+6. Give `userName` and the group `displayName` a unique index. The bundle publishes both as unique by default.
 7. Never hide inactive users. Identity providers deactivate a user with `active` false and read the user back.
 
 `docs/index.md` gives the rules for constructor parameters, ids, references, converters and passwords.

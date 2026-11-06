@@ -196,8 +196,9 @@ of the resource in `Location`. No match gives 404, more than one match 409. POST
   as the id.
 - For another lookup, implement `TacticMedia\ScimServer\Server\MeResolver` and set `resolver` to its service id.
 - A `resource_type` that does not exist, or an `attribute` that the resource type cannot filter with `eq`, stops the
-  container build. A writeOnly, Computed or integer attribute cannot select a resource. With `resolver`, the build
-  does not check them.
+  container build. A writeOnly attribute, an attribute of type `integer`, `decimal`, `boolean` or `dateTime`, and a
+  Computed attribute without `#[ScimDqlExpression]` cannot select a resource. With `resolver`, the build does not
+  check them.
 
 The `access_tokens` clients have no resource. End users need their own firewall. A write through `/Me` has the rights
 of an identity provider: an end user can change each readWrite attribute of their resource, for example `active`,
@@ -378,19 +379,30 @@ fix. An error of one member also names the member and the SCIM path.
 | `elementClass` | On a collection property of a whole multi-valued attribute: the class whose properties map the sub-attributes ([Entity collections](#entity-collections)). |
 | `type`, `required`, `caseExact`, `mutability`, `returned`, `uniqueness`, `canonicalValues`, `description` | Characteristics, only for attributes of schemas that the application defines. |
 
+`userName` and the `Group` attribute `displayName` have the uniqueness `server` by default. RFC 7643 gives `displayName`
+the uniqueness `none`. The bundle uses `server`, because Microsoft Entra ID expects 409 for a duplicate group name.
+
 `uniqueness` is also allowed on RFC 7643 attributes, except `id`, `externalId` and `meta`. Before it stores a POST, PUT or
 PATCH, the server looks for the value with an `eq` filter in the same resource type. A duplicate gives 409 `uniqueness`, for
 `server` and for `global`:
 
 ```php
-#[ORM\Column(length: 255, unique: true)]
-#[ScimAttribute('displayName', uniqueness: Uniqueness::Server)]
+#[ORM\Column(length: 20, unique: true, nullable: true)]
+#[ScimAttribute('urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:employeeNumber', uniqueness: Uniqueness::Server)]
+private ?string $employeeNumber = null;
+```
+
+`uniqueness: Uniqueness::None` lets two groups have the same name:
+
+```php
+#[ScimAttribute('displayName', uniqueness: Uniqueness::None)]
 private string $name;
 ```
 
 A unique attribute must be a top-level, single-valued attribute that is not complex. Map it with a property that is not
 writeOnly. A unique method, writeOnly attribute, sub-attribute, slot, reference or multi-valued attribute fails the
-build. This also applies to `userName`, which RFC 7643 makes unique.
+build. This also applies to `userName` and the `Group` `displayName` without `uniqueness:`. Thus a method that maps the
+`Group` `displayName` needs `uniqueness: Uniqueness::None`.
 
 An unqualified path resolves in the core schema, then in the extensions. Use the URN-qualified path when two schemas
 define the name.
@@ -503,12 +515,14 @@ class UserAddress
 - Filters: `addresses.locality eq "Paris"`, `addresses[type eq "work" and locality sw "P"]`, `addresses pr`. One
   element must satisfy the whole value path. The Doctrine ORM store translates each condition to an `EXISTS`
   subquery.
-- `sortBy=addresses.locality` sorts by the primary element, else by the first element. Cursor pagination does not
-  apply; the server pages by offset.
+- `sortBy=addresses.locality` sorts by the primary element, else by the first element. With this `sortBy`, a cursor
+  holds an offset ([Cursor pagination](#cursor-pagination)).
 - Doctrine: the property is a `OneToMany` or `ManyToMany` association to the element class, ordered by the element
   identifier with `#[ORM\OrderBy(['id' => 'ASC'])]`. Without that order the database chooses one, and the ETag and
-  `sortBy` can change without a write. Each mapped property is a column. Do not name a column `primary`, which SQL
-  reserves. The store checks this on first use, and so does `debug:scim`.
+  `sortBy` can change without a write. Each mapped property is a Doctrine field. The store checks these three rules on
+  first use, and so does `debug:scim`.
+- Do not name a column `primary`, which SQL reserves. Give it another name, as `UserAddress` does with
+  `#[ORM\Column(name: 'is_primary')]`. No check finds this name.
 - A PATCH of the attribute loads the collection. The delta path of [Large groups](#large-groups) does not apply.
 - Slots and an element collection of one attribute fail the build.
 
@@ -535,7 +549,7 @@ public function getFormattedName(): ?string
   `debug:scim` in CI.
 - The store compares the expression with `IS NOT NULL`, which DQL allows after a field, a function such as `CONCAT()`,
   `COALESCE()` or `NULLIF()`. Wrap a `CASE` expression: `COALESCE(CASE ... END, NULL)`.
-- `sortBy` on an expression has no cursor; the server pages by offset.
+- With `sortBy` on an expression, a cursor holds an offset ([Cursor pagination](#cursor-pagination)).
 - A custom store gets the expression in `AttributeMapping::$dqlExpression`.
 
 ### Read and write rules
@@ -555,7 +569,7 @@ public function getFormattedName(): ?string
 | --- | --- | --- |
 | `Symfony\Component\Uid\Uuid` (recommended) | RFC 4122 string | A malformed id gives 404. |
 | `Symfony\Component\Uid\Ulid` | base 32 string | |
-| `int` | decimal string, with `idPrefix` | RFC 7643 needs ids that are unique over all resource types. Give each int-id type its own `idPrefix`. |
+| `int` | decimal string, with `idPrefix` | RFC 7643 needs ids that are unique over all resource types. Give each int-id type its own `idPrefix`. An id outside the range of the column gives 404. |
 | `string` | as stored | |
 
 Without `#[ScimAttribute('id')]`, the property `$id` maps `id`. The bundle reads the id after the flush, so a generated
@@ -584,14 +598,14 @@ Map `meta.version` to an integer `#[ORM\Version]` field, as in the `User` above,
   DQL `UPDATE ... SET version = version + 1 WHERE id = :id AND version = :version` before the flush. The statement
   compares the version and locks the row in one step. When another request changed or deleted the row after the
   check, the request gets 412 and writes nothing.
-- Each PUT and PATCH increments the version, also one that changes only `members` and one that changes nothing. A
-  PATCH on the delta path of [Large groups](#large-groups) increments it only for a change. Without `If-Match`, the
-  store runs the statement without the version condition, so concurrent writes wait for each other instead of
+- Each PUT increments the version, also one that changes nothing. A PATCH increments it only when it changes the
+  resource, also when it changes only `members`. A PATCH that changes nothing keeps the version. Without `If-Match`,
+  the store runs the statement without the version condition, so concurrent writes wait for each other instead of
   failing with 412.
 - Doctrine leaves the version out of the INSERT, so the column needs the default `1`. Doctrine adds it to the
   mapping of an integer version field.
-- An `#[ORM\Version]` class without a `meta.version` mapping gets a computed ETag, and the store still increments the
-  version on each write.
+- An `#[ORM\Version]` class without a `meta.version` mapping gets a computed ETag. The store still increments an
+  integer version on each write. Doctrine sets a datetime version only in the flush of a column change.
 - A string member at `meta.version` is an ETag that the application maintains. The server then compares `If-Match`
   before the write, without a lock.
 - A write outside SCIM that changes only a to-many association does not increment the version. Change a column too,
@@ -648,13 +662,15 @@ A PATCH of `members` does not load the members of the group when all of these co
   `TacticMedia\ScimServer\Repository\DeltaRepository` and forward `deltaAttributes()` and `patch()`.
 - `#[ScimResource]` does not set `deltas: false` (below).
 
-The `Group` above meets them. Then one PATCH costs the same number of SQL statements for any group size, for
-example 14 statements for one member add, transaction statements included.
+A `Group` with the collections above, an adder and a remover for each, and `meta.version` as in the `User` above
+meets them. Then one PATCH costs the same number of SQL statements for any group size, for example 14 statements for
+one member add, transaction statements included.
 
 These operations use the delta path: `add` of `members`, `remove` of `members` with or without a `value` list,
 `remove` of `members[value eq "<id>"]`, and `replace` of `members`. They cover the member forms of Entra ID, Okta and
-the Keycloak plugin. When a request has another operation on `members`, for example a filter on `type` or a path-less
-`add`, the whole request loads the members. A PUT and a GET that does not exclude `members` also load them.
+the Keycloak plugin. A PATCH without an operation on `members` also uses the delta path. When a request has another
+operation on `members`, for example a filter on `type` or a path-less `add`, the whole request loads the members. A
+PUT and a GET that does not exclude `members` also load them.
 
 - The store locks the row of the group, reads member ids with DQL, writes the join table with DBAL, and increments
   the version. SQLite has no row lock and locks the database file on the first write.
@@ -680,7 +696,8 @@ class Group
 ```
 
 Then each PATCH of `members` loads the members and writes them through the adder and the remover, and the server
-dispatches `ResourceUpdated`. `debug:scim` shows the attributes that use the delta path.
+dispatches `ResourceUpdated`. `debug:scim` shows the attributes that use the delta path. It reads them from the
+repository service, so it shows `off` when a decorator does not implement `DeltaRepository`.
 
 ## Extensions
 
@@ -1023,7 +1040,9 @@ final readonly class UserRepositoryDecorator implements ResourceRepository
 }
 ```
 
-Forward `$version`. A decorator that drops it makes `If-Match` lose its atomicity.
+Forward `$version`. A decorator that drops it makes `If-Match` lose its atomicity. A decorator that does not implement
+`DeltaRepository` turns off the delta path of [Large groups](#large-groups). A decorator that does not implement
+`CursorPaginatedRepository` turns off keyset pages ([Cursor pagination](#cursor-pagination)).
 
 Decorate every resource type with `#[AsTagDecorator('tacticmedia_scim_server.repository')]` on the same kind of class.
 
@@ -1069,27 +1088,34 @@ The server dispatches these events through the `event_dispatcher` service after 
 | --- | --- |
 | `TacticMedia\ScimServer\Event\ResourceCreated` | `$type`, `$resource` |
 | `TacticMedia\ScimServer\Event\ResourceUpdated` | `$type`, `$before`, `$after`, `$patch` (`null` for PUT) |
+| `TacticMedia\ScimServer\Event\ResourcePatched` | `$type`, `$before`, `$after`, `$changes`, `$patch` |
 | `TacticMedia\ScimServer\Event\ResourceDeleted` | `$type`, `$resource` (the document before the delete) |
 
 ```php
 use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use TacticMedia\ScimServer\Event\ResourceCreated;
 use TacticMedia\ScimServer\Event\ResourceDeleted;
+use TacticMedia\ScimServer\Event\ResourcePatched;
 use TacticMedia\ScimServer\Event\ResourceUpdated;
 
 #[AsEventListener]
 final class ProvisioningRecorder
 {
-    /** @var list<ResourceCreated|ResourceUpdated|ResourceDeleted> */
+    /** @var list<ResourceCreated|ResourceUpdated|ResourcePatched|ResourceDeleted> */
     public array $events = [];
 
-    public function __invoke(ResourceCreated|ResourceUpdated|ResourceDeleted $event): void
+    public function __invoke(ResourceCreated|ResourceUpdated|ResourcePatched|ResourceDeleted $event): void
     {
         $this->events[] = $event;
     }
 }
 ```
 
+- A PATCH on the delta path of [Large groups](#large-groups) dispatches `ResourcePatched` in place of
+  `ResourceUpdated`, also a PATCH that does not change `members`. `$before` and `$after` have no `members`, and
+  `$changes` lists the added and removed members. A listener that must see every change listens to both events.
+- The documents and `$patch` have no value of an attribute that is never returned, such as `password`. An operation
+  whose path names such an attribute has the value `null`.
 - A PATCH that changes nothing dispatches no event.
 - The listener runs after the commit. For work in the same transaction, use a Doctrine listener.
 - A `ScimException` from a listener gives an error response, but the write stays.
@@ -1118,26 +1144,25 @@ public private(set) ?\DateTimeImmutable $deletedAt = null;
   `members` and `groups` do not match them.
 - Writes keep the links to soft-deleted objects: a PUT or PATCH of `members` does not remove them, also on the
   [Large groups](#large-groups) path, and a write without `manager` keeps a soft-deleted manager. A write that names
-  a soft-deleted object gives 400 `invalidValue`, as for an unknown id.
+  a soft-deleted object gives 400 `invalidValue`, as for an unknown id. A [revive](#revive) removes the links.
 - Do not soft-delete for `active: false`. Entra and Okta deactivate users with it and expect to find inactive users.
 
 ### Re-provisioning
 
 The server checks unique attributes against the objects that it shows, so a POST with the `userName` of a
-soft-deleted user reaches the repository. Entra sends one when it creates a user again after a hard delete.
+soft-deleted user reaches the repository. Entra sends one when it creates a user with the `userName` of a deleted
+user.
 
-By default the repository revives the soft-deleted object whose unique attributes match the POST: `userName`, and
-each attribute with `uniqueness:`, with the case rules of `eq`. It clears the property, writes the document onto the
-object as onto a new one, and answers 201. The object keeps its id, `meta.created` and the links that other objects
-have to it, for example its groups.
+By default the repository stores a new object with a new id. A unique index on `userName` then rejects it with 409
+`uniqueness`. To store the new object next to the soft-deleted one, make the index unique only among live rows.
+`columns`, `where` and the SQL name database columns.
 
-`#[ScimSoftDelete(revive: false)]` stores a new object. A unique index on `userName` then rejects it with 409
-`uniqueness`. To store the new object next to the soft-deleted one, replace the index with a partial unique index
-(PostgreSQL only; Doctrine DBAL ignores `where` on other platforms). `columns` and `where` name database columns:
+PostgreSQL: a partial unique index. Write `where` as PostgreSQL returns it, in parentheses. Otherwise each schema diff
+drops and creates the index again:
 
 ```php
 #[ORM\Entity]
-#[ORM\UniqueConstraint(name: 'app_user_live_user_name', columns: ['user_name'], options: ['where' => 'deleted_at IS NULL'])]
+#[ORM\UniqueConstraint(name: 'app_user_live_user_name', columns: ['user_name'], options: ['where' => '(deleted_at IS NULL)'])]
 #[ScimResource('User')]
 class User
 {
@@ -1146,16 +1171,63 @@ class User
     private string $userName;
 
     #[ORM\Column(nullable: true)]
-    #[ScimSoftDelete(revive: false)]
+    #[ScimSoftDelete]
     public private(set) ?\DateTimeImmutable $deletedAt = null;
 }
 ```
+
+SQLite: a partial unique index too. Doctrine DBAL creates `where` only on PostgreSQL, and a schema diff replaces an
+index whose `where` it cannot create. Map the constraint without `options`, then replace the index in a migration:
+
+```sql
+DROP INDEX app_user_live_user_name;
+CREATE UNIQUE INDEX app_user_live_user_name ON app_user (user_name) WHERE deleted_at IS NULL;
+```
+
+MySQL: a functional key part, `CREATE UNIQUE INDEX app_user_live_user_name ON app_user ((IF(deleted_at IS NULL,
+user_name, NULL)))`, keeps live user names unique. Doctrine DBAL 4.5 cannot read it, so `doctrine:schema:validate`,
+`doctrine:schema:update` and `doctrine:migrations:diff` fail with a `TypeError`. Map a generated column and index it
+instead. This works on MariaDB too, which has no functional key parts:
+
+```php
+#[ORM\Entity]
+#[ORM\UniqueConstraint(name: 'app_user_live_user_name', columns: ['live_user_name'])]
+#[ScimResource('User')]
+class User
+{
+    #[ORM\Column(name: 'live_user_name', length: 180, nullable: true, insertable: false, updatable: false, columnDefinition: 'VARCHAR(180) GENERATED ALWAYS AS (IF(deleted_at IS NULL, user_name, NULL)) VIRTUAL', generated: 'ALWAYS')]
+    private ?string $liveUserName = null;
+}
+```
+
+### Revive
+
+`#[ScimSoftDelete(revive: true)]` makes the repository revive the soft-deleted object whose unique attributes match
+the POST: `userName`, and each attribute with `uniqueness:`, with the case rules of `eq`. The object keeps its id and
+`meta.created`, so the new user gets the id of the deleted one. Use it only when that is correct for your users. The
+repository then answers 201:
+
+1. It clears the property, and removes the links of other objects to the object that a mapping can write. It removes
+   the object from each reference collection, for example from `members` of each group, and sets each nullable
+   reference, for example the `manager` of its reports, to null. These objects get a new `meta.version` and
+   `meta.lastModified`. The server dispatches no event for them.
+2. It empties the writable references and reference collections of the object, also readOnly ones with an adder and a
+   remover and links to soft-deleted objects. It sets each writable `writeOnly` attribute, for example `password`, to
+   its `default:`, else null.
+3. It writes the document onto the object as onto a new one. Each attribute that a client can write and the
+   document leaves out gets its `default:`, else null, else an empty collection.
+
+The bundle does not change data that no mapping can write. Rows of your application that refer to the object, for
+example orders or audit entries, stay with it and pass to the new user. If that is wrong for your data, keep the
+default.
 
 ### Custom stores
 
 The Doctrine ORM store applies these rules. A [custom store](#custom-objectstore) for a class with `#[ScimSoftDelete]`
 skips soft-deleted objects in `find()`, `findMany()` and `query()`. To revive, it implements
-`TacticMedia\ScimServerBundle\Object\SoftDeleteStore::findDeleted()`; without it, a POST always stores a new object.
+`TacticMedia\ScimServerBundle\Object\SoftDeleteStore::findDeleted()`; without it, a POST always stores a new object. A
+revive calls `transactional()` inside `transactional()`: when the inner write returns, `query()` must find the
+restored object.
 
 A store that cannot hide soft-deleted objects keeps them out of the mapping: leave out `#[ScimSoftDelete]` and
 [decorate](#decoration) the repository. Its `delete()` marks the record in your storage:
@@ -1276,7 +1348,7 @@ tacticmedia_scim_server:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `pagination.cursor.enabled` | `true` | `false` turns cursors off. The server then ignores `cursor` and pages by `startIndex` only. |
-| `pagination.cursor.key` | `%kernel.secret%` | The key that encrypts and authenticates the cursors. Give all servers of the application the same key. A new key makes every open cursor 400 `invalidCursor`. |
+| `pagination.cursor.key` | `%kernel.secret%` | The key that encrypts and authenticates the cursors. Give all servers of the application the same key. A new key makes every open cursor 400 `invalidCursor`. An empty key fails the container build. An environment variable gets its value at run time, so an empty one fails each SCIM request with an error that names this option. |
 | `pagination.cursor.timeout_seconds` | none | The seconds that a cursor stays valid. Then it is 400 `expiredCursor`. `/ServiceProviderConfig` publishes it as `pagination.cursorTimeout`. The `clock` service gives the time. |
 
 - A request without `cursor` pages by `startIndex`. `defaultPaginationMethod` is `index`.
@@ -1291,8 +1363,10 @@ which the store reads from the database. A resource that is created or deleted b
 next page. The store pages by keyset when each `sortBy` member has one of these Doctrine types: `string`,
 `ascii_string`, `text`, `guid`, `enum`, `integer`, `smallint`, `bigint`, `float`, `boolean`, `date`, `time`,
 `datetime`, `datetime_utc` and their immutable types, `date_point`, `day_point`, `time_point`. With another type, for
-example `decimal`, `smallfloat`, `datetimetz`, `binary`, `uuid` or a custom type, the cursor holds an offset. A create or delete before the offset then
-moves the next page, as with `startIndex`. Queries across all resource types (`/`, `/.search`) also use an offset.
+example `decimal`, `smallfloat`, `datetimetz`, `binary`, `uuid` or a custom type, the cursor holds an offset. A create
+or delete before the offset then moves the next page, as with `startIndex`. Queries across all resource types (`/`,
+`/.search`) also use an offset. A cursor has at most 4096 characters. When a position, for example long sort values,
+makes it longer, the cursor holds an offset.
 
 A custom store pages by keyset when it implements `CursorPaginatedObjectStore`:
 
@@ -1371,7 +1445,7 @@ MariaDB 12.3 and 13.0.
 
 | Status | `scimType` | Cause |
 | --- | --- | --- |
-| 400 | `invalidFilter` | An unmapped, Computed or writeOnly attribute in a filter, or an operator that the attribute does not support. |
+| 400 | `invalidFilter` | An unmapped or writeOnly attribute, or a Computed attribute without `#[ScimDqlExpression]`, in a filter. An operator that the attribute does not support. |
 | 400 | `invalidValue` | A converter failure, an unknown reference id, an unsupported `sortBy`, a Validator violation. |
 | 400 | `invalidPath` | A PATCH path that the class does not map. |
 | 401 | | No token, or a wrong token. |
@@ -1401,14 +1475,15 @@ bin/console debug:scim User
 
 The command shows each resource type: endpoint, class, store, schemas, and each mapped path with its member, kind,
 filter support and sort support, the validation groups, and the attributes whose PATCH uses the delta path of
-[Large groups](#large-groups). For a raw repository it shows the declared attributes.
+[Large groups](#large-groups). It reads these attributes from the repository service, so it shows `off` for a
+decorator that does not implement `DeltaRepository`. For a raw repository it shows the declared attributes.
 
 It also runs the checks that need services:
 
-- The store, the factory and each converter of a mapping are services.
+- The store, the factory and each converter of a mapping are services, also the converters of an element class.
 - The Doctrine metadata fits the mapping: each property is a Doctrine field or association, `id` is the single
   identifier, a Reference is a to-one association and a reference collection a to-many association to the target
-  class, `meta.version` maps the integer `#[ORM\Version]` field.
+  class, a writable Reference is the owning side, `meta.version` maps the integer `#[ORM\Version]` field.
 - An element collection is a to-many association to the element class, ordered by the element identifier, and each
   mapped property of the element class is a Doctrine field. The table has a row per mapped property of the element
   class.

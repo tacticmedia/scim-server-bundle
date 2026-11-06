@@ -55,7 +55,7 @@ final readonly class ObjectResourceRepository implements CursorPaginatedReposito
         $this->values = new MemberValues($converters);
         $this->references = new References($mappings, $stores, $this->values);
         $this->deltas = new CollectionDeltas($this->references, $converters);
-        $this->revival = new Revival($planner);
+        $this->revival = new Revival($planner, $mappings, $this->references, $this->values, $this->deltas);
     }
 
     #[\Override]
@@ -222,7 +222,7 @@ final readonly class ObjectResourceRepository implements CursorPaginatedReposito
     }
 
     /**
-     * A soft delete is an update, so a revived object keeps its id and the links of other objects to it.
+     * A soft delete is an update, so the links of other objects to the object stay.
      */
     private function remove(ResourceMapping $mapping, ObjectStore $store, object $object, mixed $version): void
     {
@@ -237,16 +237,27 @@ final readonly class ObjectResourceRepository implements CursorPaginatedReposito
     }
 
     /**
-     * Restores a soft-deleted object and writes $document onto it as onto a new object. It keeps its id, meta.created
-     * and the links that other objects have to it.
+     * Restores a soft-deleted object, removes its links ({@see Revival::reset()}) and writes $document onto it as onto
+     * a new object. It keeps its id and meta.created.
      *
      * @param array<string, mixed> $document
      */
     private function revive(ResourceMapping $mapping, ObjectStore $store, object $object, array $document): object
     {
-        $mapping->softDelete?->restore($object);
+        // The nested write makes the restore visible to the queries that find the links.
+        $store->transactional($mapping, static function () use ($mapping, $store, $object): void {
+            $mapping->softDelete?->restore($object);
+            $store->update($mapping, $object);
+        });
+        $now = $this->now();
+
+        foreach ($this->revival->reset($mapping, $object) as [$owner, $other]) {
+            $this->stamp($owner, $other, 'lastModified', $now);
+            $this->references->store($owner)->update($owner, $other);
+        }
+
         $this->mapper->write($mapping, $document, $object, true);
-        $this->stamp($mapping, $object, 'lastModified', $this->now());
+        $this->stamp($mapping, $object, 'lastModified', $now);
         $this->validator->validate($mapping, $object);
         $store->update($mapping, $object);
 

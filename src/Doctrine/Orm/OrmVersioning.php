@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace TacticMedia\ScimServerBundle\Doctrine\Orm;
 
+use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\ORM\Mapping\ClassMetadata;
 use TacticMedia\ScimServer\Exception\ScimException;
 use TacticMedia\ScimServerBundle\Mapping\ResourceMapping;
 
@@ -18,7 +20,8 @@ use TacticMedia\ScimServerBundle\Mapping\ResourceMapping;
 final class OrmVersioning
 {
     /**
-     * Nothing for a class without #[ORM\Version].
+     * Nothing for a class without an integer #[ORM\Version] field. Doctrine sets a datetime version in the flush UPDATE
+     * of a column change.
      *
      * @param mixed $version the member value that the row must have; null: no condition
      *
@@ -28,7 +31,7 @@ final class OrmVersioning
     {
         $metadata = $manager->getClassMetadata($mapping->class);
 
-        if (!$metadata->isVersioned) {
+        if (!self::hasIntegerVersion($metadata)) {
             return;
         }
 
@@ -50,5 +53,13 @@ final class OrmVersioning
         // The row lock of the UPDATE holds until the commit, so the flush UPDATE finds this version.
         $current = $manager->createQuery(\sprintf('SELECT o.%s FROM %s o WHERE o.%s = :id', $field, $mapping->class, $id))->setParameter('id', $idValue, $metadata->getTypeOfField($id));
         $metadata->setFieldValue($object, $field, $current->getSingleScalarResult());
+    }
+
+    /**
+     * @param ClassMetadata<object> $metadata
+     */
+    public static function hasIntegerVersion(ClassMetadata $metadata): bool
+    {
+        return $metadata->isVersioned && \in_array($metadata->getTypeOfField((string) $metadata->versionField), [Types::INTEGER, Types::SMALLINT, Types::BIGINT], true);
     }
 }

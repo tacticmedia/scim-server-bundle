@@ -67,16 +67,11 @@ final readonly class ElementWriter
     }
 
     /**
-     * The array elements; "primary" stays true only on the first element that has it, as RFC 7643 section 2.4 needs.
-     *
      * @return list<array<mixed>>
      */
     private function documents(mixed $elements): array
     {
-        $documents = array_values(array_filter(\is_array($elements) ? $elements : [], \is_array(...)));
-        $primary = array_find_key($documents, static fn (array $document): bool => true === ($document['primary'] ?? null));
-
-        return array_map(static fn (int $index, array $document): array => $index > ($primary ?? \PHP_INT_MAX) && true === ($document['primary'] ?? null) ? ['primary' => false] + $document : $document, array_keys($documents), $documents);
+        return array_values(array_filter(\is_array($elements) ? $elements : [], \is_array(...)));
     }
 
     /**

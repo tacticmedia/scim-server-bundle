@@ -9,6 +9,7 @@ use Doctrine\DBAL\Exception\ForeignKeyConstraintViolationException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\OptimisticLockException;
+use Doctrine\ORM\PersistentCollection;
 use Doctrine\ORM\Query\Expr\Join;
 use Doctrine\ORM\Query\Parameter;
 use Doctrine\Persistence\ManagerRegistry;
@@ -19,6 +20,7 @@ use TacticMedia\ScimServerBundle\Converter\ConversionFailed;
 use TacticMedia\ScimServerBundle\Converter\IdConverter;
 use TacticMedia\ScimServerBundle\Converter\ValueConverter;
 use TacticMedia\ScimServerBundle\Mapping\AttributeMapping;
+use TacticMedia\ScimServerBundle\Mapping\ElementMapping;
 use TacticMedia\ScimServerBundle\Mapping\MappingException;
 use TacticMedia\ScimServerBundle\Mapping\MappingRegistry;
 use TacticMedia\ScimServerBundle\Mapping\ResourceMapping;
@@ -44,6 +46,9 @@ final class OrmObjectStore implements CursorPaginatedObjectStore, CollectionDelt
     private readonly OrmCollectionDeltas $deltas;
 
     private readonly OrmQueryTranslator $translator;
+
+    /** @var list<array{ResourceMapping, object}> the objects of insert() and update() in the current transactional() */
+    private array $written = [];
 
     /**
      * @param ServiceLocator<ValueConverter> $converters keyed by class name
@@ -71,7 +76,7 @@ final class OrmObjectStore implements CursorPaginatedObjectStore, CollectionDelt
     public function findMany(ResourceMapping $mapping, array $ids): array
     {
         $manager = $this->manager($mapping);
-        $converted = array_values(array_filter(array_map(fn (string $id): ?array => $this->convert($mapping, $id), $ids)));
+        $converted = array_values(array_filter(array_map(fn (string $id): ?array => $this->convert($manager, $mapping, $id), $ids)));
         $metadata = $manager->getClassMetadata($mapping->class);
         $byValue = [];
 
@@ -109,8 +114,8 @@ final class OrmObjectStore implements CursorPaginatedObjectStore, CollectionDelt
             $builder->addOrderBy($expression, $direction);
         }
 
-        foreach ($context->joins() as [$association, $alias, $condition]) {
-            $builder->leftJoin($association, $alias, Join::WITH, $condition);
+        foreach ($context->joins() as [$class, $alias, $condition]) {
+            $builder->leftJoin($class, $alias, Join::WITH, $condition);
         }
 
         $objects = 0 === $query->count || $total < $query->startIndex
@@ -163,9 +168,16 @@ final class OrmObjectStore implements CursorPaginatedObjectStore, CollectionDelt
     public function transactional(ResourceMapping $mapping, \Closure $write): mixed
     {
         $manager = $this->manager($mapping);
+        $this->written = [];
 
         try {
-            return $manager->wrapInTransaction(static fn (): mixed => $write());
+            return $manager->wrapInTransaction(function () use ($manager, $write): mixed {
+                $result = $write();
+                $manager->flush();
+                $this->reloadElements($manager);
+
+                return $result;
+            });
         } catch (\Throwable $throwable) {
             $filters = OrmFilters::enabled($manager);
             $this->doctrine->resetManager(array_find(array_keys($this->doctrine->getManagerNames()), fn (string $name): bool => $this->doctrine->getManager($name) === $manager));
@@ -184,6 +196,7 @@ final class OrmObjectStore implements CursorPaginatedObjectStore, CollectionDelt
     public function insert(ResourceMapping $mapping, object $object): void
     {
         $this->manager($mapping)->persist($object);
+        $this->written[] = [$mapping, $object];
     }
 
     /**
@@ -193,6 +206,7 @@ final class OrmObjectStore implements CursorPaginatedObjectStore, CollectionDelt
     public function update(ResourceMapping $mapping, object $object, mixed $version = null): void
     {
         OrmVersioning::increment($this->manager($mapping), $mapping, $object, $version);
+        $this->written[] = [$mapping, $object];
     }
 
     /**
@@ -219,9 +233,10 @@ final class OrmObjectStore implements CursorPaginatedObjectStore, CollectionDelt
     #[\Override]
     public function lock(ResourceMapping $mapping, string $id, mixed $version = null): ?object
     {
-        $converted = $this->convert($mapping, $id);
+        $manager = $this->manager($mapping);
+        $converted = $this->convert($manager, $mapping, $id);
 
-        return null === $converted ? null : $this->deltas->lock($this->manager($mapping), $mapping, $converted[1], $version);
+        return null === $converted ? null : $this->deltas->lock($manager, $mapping, $converted[1], $version);
     }
 
     #[\Override]
@@ -272,9 +287,10 @@ final class OrmObjectStore implements CursorPaginatedObjectStore, CollectionDelt
     }
 
     /**
-     * @return array{string, mixed}|null the SCIM id and the id member value; null when $id is malformed
+     * @return array{string, mixed}|null the SCIM id and the id member value; null when $id is malformed or the id
+     *                                   column cannot hold its value
      */
-    private function convert(ResourceMapping $mapping, string $id): ?array
+    private function convert(EntityManagerInterface $manager, ResourceMapping $mapping, string $id): ?array
     {
         try {
             $value = $this->converters->get($mapping->id->converter ?? IdConverter::class)->fromScim($id, new ConversionContext($mapping, $mapping->id));
@@ -282,7 +298,7 @@ final class OrmObjectStore implements CursorPaginatedObjectStore, CollectionDelt
             return null;
         }
 
-        return null === $value ? null : [$id, $value];
+        return null === $value || !OrmTypes::holds($manager->getClassMetadata($mapping->class)->getTypeOfField($mapping->id->member), $value) ? null : [$id, $value];
     }
 
     /**
@@ -324,6 +340,25 @@ final class OrmObjectStore implements CursorPaginatedObjectStore, CollectionDelt
                 $this->byIds($manager, $mapping, $ids, $relation->member);
             }
         }
+    }
+
+    /**
+     * The next access loads each element collection of the written objects in identifier order, as a read does. In
+     * memory, an added element is last, also when its identifier sorts first, and the document and ETag of the write
+     * would differ from those of the next read.
+     */
+    private function reloadElements(EntityManagerInterface $manager): void
+    {
+        foreach ($this->written as [$mapping, $object]) {
+            $metadata = $manager->getClassMetadata($mapping->class);
+            $values = array_map(static fn (AttributeMapping $collection): mixed => $metadata->getFieldValue($object, $collection->member), array_filter($mapping->attributes, static fn (AttributeMapping $attribute): bool => $attribute->element instanceof ElementMapping));
+
+            foreach (array_filter($values, static fn (mixed $value): bool => $value instanceof PersistentCollection) as $collection) {
+                $collection->setInitialized(false);
+            }
+        }
+
+        $this->written = [];
     }
 
     /**

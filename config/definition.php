@@ -63,7 +63,7 @@ return static function (DefinitionConfigurator $definition): void {
                         ->info('RFC 9865 cursors (?cursor). Disabled: the cursor parameter is ignored.')
                         ->canBeDisabled()
                         ->children()
-                            ->stringNode('key')->info('Encrypts the cursors. Each server needs the same key. A new key invalidates every cursor.')->cannotBeEmpty()->defaultValue('%kernel.secret%')->end()
+                            ->stringNode('key')->info('Encrypts the cursors. Each server needs the same key. A new key invalidates every cursor. Empty from an environment variable: each SCIM request fails.')->cannotBeEmpty()->defaultValue('%kernel.secret%')->end()
                             ->integerNode('timeout_seconds')->info('Published as cursorTimeout. Null: cursors do not expire.')->min(1)->defaultNull()->end()
                         ->end()
                     ->end()

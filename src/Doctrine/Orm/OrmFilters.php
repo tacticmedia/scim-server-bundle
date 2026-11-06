@@ -8,9 +8,9 @@ use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Query\Filter\SQLFilter;
 
 /**
- * The SQL filters of a manager across resetManager(), which builds the new manager from the configuration. A filter
- * that the application enabled at runtime, for example a tenant filter, would otherwise be lost, and the next
- * operation of a Bulk request would run unfiltered.
+ * The SQL filters of a manager across resetManager(), which builds the new manager from the configuration. The next
+ * operation of a Bulk request would otherwise lose a filter that the application enabled at runtime, for example a
+ * tenant filter, or get back a configured filter that the application disabled at runtime.
  *
  * @internal
  */
@@ -25,12 +25,20 @@ final class OrmFilters
     }
 
     /**
+     * Enables exactly $filters.
+     *
      * @param array<string, mixed> $filters as enabled() returns them
      */
     public static function enable(EntityManagerInterface $manager, array $filters): void
     {
+        $collection = $manager->getFilters();
+
+        foreach (array_keys(array_diff_key($collection->getEnabledFilters(), $filters)) as $name) {
+            $collection->disable($name);
+        }
+
         foreach ($filters as $name => $parameters) {
-            self::restore($manager->getFilters()->enable($name), \is_array($parameters) ? $parameters : []);
+            self::restore($collection->enable($name), \is_array($parameters) ? $parameters : []);
         }
     }
 

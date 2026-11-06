@@ -7,11 +7,13 @@ namespace TacticMedia\ScimServerBundle\Doctrine\Orm;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\Mapping\ClassMetadata;
 use TacticMedia\ScimServer\Path\AttributePath;
+use TacticMedia\ScimServer\Schema\Mutability;
 use TacticMedia\ScimServerBundle\Mapping\AttributeMapping;
 use TacticMedia\ScimServerBundle\Mapping\MappingException;
 use TacticMedia\ScimServerBundle\Mapping\MappingKind;
 use TacticMedia\ScimServerBundle\Mapping\MappingRegistry;
 use TacticMedia\ScimServerBundle\Mapping\ResourceMapping;
+use TacticMedia\ScimServerBundle\Mapping\SoftDelete;
 
 /**
  * The SCIM mapping of a class must fit its Doctrine metadata. Computed mappings are exempt; {@see OrmQueryChecks}
@@ -21,6 +23,8 @@ use TacticMedia\ScimServerBundle\Mapping\ResourceMapping;
  */
 final class OrmMappingChecks
 {
+    private const array MUTABLE_DATE_TYPES = [Types::DATE_MUTABLE, Types::DATETIME_MUTABLE, Types::DATETIMETZ_MUTABLE, Types::TIME_MUTABLE, 'datetime_utc'];
+
     /**
      * @param ClassMetadata<object> $metadata
      *
@@ -55,7 +59,7 @@ final class OrmMappingChecks
      */
     private static function versionError(ResourceMapping $mapping, AttributeMapping $attribute, ClassMetadata $metadata): ?string
     {
-        $fits = $attribute->member === $metadata->versionField && \in_array($metadata->getTypeOfField($attribute->member), [Types::INTEGER, Types::SMALLINT, Types::BIGINT], true);
+        $fits = $attribute->member === $metadata->versionField && OrmVersioning::hasIntegerVersion($metadata);
 
         return $fits ? null : \sprintf('%s::%s: "%s" needs an integer #[ORM\Version] field, but %2$s is not one. Map "meta.version" to an int property with #[ORM\Version] and #[ORM\Column(type: Types::INTEGER)].', $mapping->class, $attribute->label(), $attribute->declaredPath);
     }
@@ -65,10 +69,23 @@ final class OrmMappingChecks
      */
     private static function softDeleteError(ResourceMapping $mapping, ClassMetadata $metadata): ?string
     {
-        $property = $mapping->softDelete?->property;
-        $problem = null === $property ? null : self::fieldProblem($property, $metadata);
+        $softDelete = $mapping->softDelete;
+        $problem = $softDelete instanceof SoftDelete ? self::fieldProblem($softDelete->property, $metadata) ?? self::dateProblem($softDelete, $metadata) : null;
 
-        return null === $problem ? null : \sprintf('%s::$%s: #[ScimSoftDelete] %s', $mapping->class, $property, $problem);
+        return null === $problem ? null : \sprintf('%s::$%s: #[ScimSoftDelete] %s', $mapping->class, $softDelete->property, $problem);
+    }
+
+    /**
+     * A mutable Doctrine date type converts only a DateTime.
+     *
+     * @param ClassMetadata<object> $metadata
+     */
+    private static function dateProblem(SoftDelete $softDelete, ClassMetadata $metadata): ?string
+    {
+        $type = (string) $metadata->getTypeOfField($softDelete->property);
+        $mutable = \in_array($type, self::MUTABLE_DATE_TYPES, true) && is_a((string) $softDelete->dateClass, \DateTimeImmutable::class, true);
+
+        return $mutable ? \sprintf('writes a DateTimeImmutable, but $%s is a %s column, which takes a DateTime. Type $%1$s as ?\DateTime, or map it to the %2$s_immutable type.', $softDelete->property, $type) : null;
     }
 
     /**
@@ -109,13 +126,17 @@ final class OrmMappingChecks
             && $single === $metadata->isSingleValuedAssociation($member)
             && is_a($metadata->getAssociationTargetClass($member), $target, true);
 
-        return $fits ? null : \sprintf(
-            $single
-                ? 'refers to %s, but $%s is not a to-one Doctrine association to %s. Map $%2$s with #[ORM\ManyToOne] or #[ORM\OneToOne] to %3$s.'
-                : 'refers to %s, but $%s is not a to-many Doctrine association to %s. Map $%2$s with #[ORM\ManyToMany] or #[ORM\OneToMany] to %3$s.',
-            $attribute->targetType,
-            $member,
-            $target,
-        );
+        return match (true) {
+            !$fits => \sprintf(
+                $single
+                    ? 'refers to %s, but $%s is not a to-one Doctrine association to %s. Map $%2$s with #[ORM\ManyToOne] or #[ORM\OneToOne] to %3$s.'
+                    : 'refers to %s, but $%s is not a to-many Doctrine association to %s. Map $%2$s with #[ORM\ManyToMany] or #[ORM\OneToMany] to %3$s.',
+                $attribute->targetType,
+                $member,
+                $target,
+            ),
+            $single && Mutability::ReadOnly !== $attribute->definition->mutability && !$metadata->getAssociationMapping($member)->isOwningSide() => \sprintf('refers to %s, but $%s is the inverse side of a Doctrine association, so writes to it are lost. Map "%s" to a #[ORM\ManyToOne], or to the owning side of a #[ORM\OneToOne].', $attribute->targetType, $member, $attribute->declaredPath),
+            default => null,
+        };
     }
 }

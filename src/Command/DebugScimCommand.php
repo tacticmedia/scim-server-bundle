@@ -9,6 +9,8 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Symfony\Component\DependencyInjection\ServiceLocator;
+use TacticMedia\ScimServer\Path\AttributePath;
+use TacticMedia\ScimServer\Repository\DeltaRepository;
 use TacticMedia\ScimServer\Schema\AttributeType;
 use TacticMedia\ScimServer\Schema\Mutability;
 use TacticMedia\ScimServer\Schema\ResourceType;
@@ -20,9 +22,6 @@ use TacticMedia\ScimServerBundle\Mapping\MappingException;
 use TacticMedia\ScimServerBundle\Mapping\MappingKind;
 use TacticMedia\ScimServerBundle\Mapping\MappingRegistry;
 use TacticMedia\ScimServerBundle\Mapping\ResourceMapping;
-use TacticMedia\ScimServerBundle\Object\CollectionDeltas;
-use TacticMedia\ScimServerBundle\Object\MemberValues;
-use TacticMedia\ScimServerBundle\Object\References;
 use TacticMedia\ScimServerBundle\Query\Planning\MemberConditions;
 use TacticMedia\ScimServerBundle\Schema\PublishedResourceTypes;
 
@@ -34,6 +33,7 @@ final readonly class DebugScimCommand
      * @param ServiceLocator<mixed>       $stores            ObjectStore services by class name
      * @param ServiceLocator<mixed>       $factories         ObjectFactory services by class name
      * @param ServiceLocator<mixed>       $converters        ValueConverter services by class name
+     * @param ServiceLocator<mixed>       $repositories      the repository service of each mapped resource type, by name
      */
     public function __construct(
         private MappingRegistry $mappings,
@@ -42,6 +42,7 @@ final readonly class DebugScimCommand
         private ServiceLocator $stores,
         private ServiceLocator $factories,
         private ServiceLocator $converters,
+        private ServiceLocator $repositories,
     ) {
     }
 
@@ -114,18 +115,17 @@ final readonly class DebugScimCommand
      */
     private function missingServices(ResourceMapping $mapping): array
     {
+        $members = array_merge(...array_map(static fn (AttributeMapping $attribute): array => [$attribute, ...$attribute->element->attributes ?? []], $mapping->attributes));
         $services = [
             'store' => [$this->stores, [$mapping->store ?? OrmObjectStore::class]],
             'factory' => [$this->factories, array_filter([$mapping->factory])],
-            'converter' => [$this->converters, array_unique(array_filter(array_map(static fn (AttributeMapping $attribute): ?string => $attribute->converter, $mapping->attributes)))],
+            'converter' => [$this->converters, array_unique(array_filter(array_map(static fn (AttributeMapping $attribute): ?string => $attribute->converter, $members)))],
         ];
         $errors = [];
 
         foreach ($services as $option => [$locator, $classes]) {
-            foreach ($classes as $class) {
-                if (!$locator->has($class)) {
-                    $errors[] = $mapping->class.': '.$this->notAService($option, $class);
-                }
+            foreach (array_filter($classes, static fn (string $class): bool => !$locator->has($class)) as $class) {
+                $errors[] = $mapping->class.': '.$this->notAService($option, $class);
             }
         }
 
@@ -160,19 +160,24 @@ final readonly class DebugScimCommand
 
     /**
      * The attributes whose PATCH changes the elements without a load of the collection.
-     */
-    /**
+     *
      * @param list<string> $errors the failed checks, which the deltas need to pass
      */
     private function memberDeltas(ResourceMapping $mapping, array $errors): string
     {
-        $deltas = new CollectionDeltas(new References($this->mappings, $this->stores, new MemberValues($this->converters)), $this->converters);
+        if (!$mapping->deltas) {
+            return 'off: deltas: false';
+        }
 
-        return match (true) {
-            !$mapping->deltas => 'off: deltas: false',
-            [] !== $errors => 'unknown: a check fails',
-            default => implode("\n", array_map(static fn (array $collections): string => $collections[0]->path->attribute, $deltas->collections($mapping))) ?: 'none',
-        };
+        if ([] !== $errors) {
+            return 'unknown: a check fails';
+        }
+
+        $repository = $this->repositories->get($mapping->resourceType->name);
+
+        return $repository instanceof DeltaRepository
+            ? (implode("\n", array_map(static fn (AttributePath $path): string => $path->attribute, $repository->deltaAttributes())) ?: 'none')
+            : \sprintf('off: %s does not implement DeltaRepository', get_debug_type($repository));
     }
 
     private function schemas(ResourceType $type): string
