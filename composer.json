@@ -25,7 +25,7 @@
         "symfony/security-core": "^8.1",
         "symfony/security-http": "^8.1.11",
         "symfony/uid": "^8.1",
-        "tacticmedia/scim-server": "^1.0"
+        "tacticmedia/scim-server": "^0.1"
     },
     "conflict": {
         "doctrine/doctrine-bundle": "<3.3",
