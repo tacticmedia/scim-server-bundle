@@ -20,7 +20,7 @@ Thus map each attribute of the attribute mapping of the identity provider, or re
 
 ### Connection
 
-Create a non-gallery enterprise application. In **Provisioning**, set:
+Create a non-gallery enterprise application. In **Provisioning** > **New configuration**, set:
 
 | Field | Value |
 | --- | --- |
@@ -84,8 +84,8 @@ shows its real list. Map each row of that list, or delete the row in Entra.
 | --- | --- |
 | User unassigned, out of scope, disabled or soft-deleted | PATCH `active` false. Entra sends `"False"` without the flag. |
 | User restored | PATCH `active` true. |
-| User hard-deleted, 30 days after the soft delete or by a purge | DELETE, when the **Delete** target action is on. |
-| Group deleted or unassigned | DELETE. |
+| User hard-deleted, 30 days after the soft delete or by a purge | DELETE, when the **Delete** target action is on. Not for a user that was unassigned before: Entra no longer manages it. |
+| Group deleted or unassigned | DELETE. Microsoft's group sequence ends with a DELETE, but does not name the event that sends it. |
 
 Microsoft requires that GET and filters return a user whether or not the user is active. Do not hide inactive users
 ([Soft delete](index.md#soft-delete)).
@@ -93,8 +93,10 @@ Microsoft requires that GET and filters return a user whether or not the user is
 ### Failures
 
 Entra retries a failed object 6, 12 and 24 hours after the failure, then each day for 28 days. Entra puts the job in
-quarantine when more than 40 percent of the events fail, from 5,000 failures, or for a 404 where it expects 200. A
-quarantined job runs less often, down to once a day. After four weeks in quarantine, Entra disables the job. An unmapped PATCH path fails
+quarantine for invalid credentials, for a 404 where it expects 200, and from 5,000 failures when more than 40 percent
+of the events fail or more than 40,000 events fail. Failed references, for example a manager or a group member, do not
+count toward these limits, but all failures count toward a limit of 60,000. A quarantined job runs less often, down to
+once a day. After four weeks in quarantine, Entra disables the job. An unmapped PATCH path fails
 each cycle, so map the attributes before you start provisioning.
 
 ## Okta
@@ -103,9 +105,9 @@ each cycle, so map the attributes before you start provisioning.
 
 | Setting | Value |
 | --- | --- |
-| Base URL | The base URL, for example `https://example.com/scim/v2`. Okta rejects a base URL with `_`. |
-| Authentication | HTTP Header with a token of `access_tokens`. The token extractor reads the token with and without `Bearer`. |
-| Unique identifier | `userName`. Okta finds an existing user with `userName eq "..."`. |
+| SCIM connector base URL | The base URL, for example `https://example.com/scim/v2`. Okta rejects a base URL with `_`. |
+| Authentication Mode | HTTP Header, with a token of `access_tokens` in **Authorization**. The token extractor reads the token with and without `Bearer`. |
+| Unique identifier field for users | `userName`. Okta finds an existing user with `userName eq "..."`. |
 | To App | Create Users, Update User Attributes, Deactivate Users. Sync Password only when the class maps `password`. |
 
 ### User attributes
@@ -123,7 +125,7 @@ Okta requires `userName`, `name.givenName`, `name.familyName`, `emails` and `act
 | `externalId` | `#[ScimAttribute('externalId')]` | The Okta user id, for example `00ujl29u0le5T6Aj10h7`. |
 | `displayName` | `#[ScimAttribute('displayName')]` | |
 | `locale` | `#[ScimAttribute('locale')]` | Optional. Dropped when unmapped. |
-| `password` | `#[ScimAttribute('password', converter: HashPassword::class)]` | Okta sends a password on create also without password sync. Map it only for password sync ([Password](index.md#password)). Dropped when unmapped. |
+| `password` | `#[ScimAttribute('password', converter: HashPassword::class)]` | Okta sends a password on create also without password sync, unless **Set password when creating new users** is off. Map it only for password sync ([Password](index.md#password)). Dropped when unmapped. |
 | `groups` | | readOnly. The server ignores it. |
 
 Attributes that you add to the Okta app profile arrive with the same rule as [Unmapped attributes](#unmapped-attributes).
@@ -132,10 +134,12 @@ Attributes that you add to the Okta app profile arrive with the same rule as [Un
 
 - A profile update is a GET, then a PUT of the GET document with the changed values. A PUT drops unmapped attributes,
   so they never fail a request.
-- New OIN integrations activate, deactivate and sync passwords with PATCH. Other integrations use PUT for each update.
+- New OIN integrations activate, deactivate and sync passwords with PATCH. Integrations made with the App Integration
+  Wizard, now the Classic experience, use PUT for each update.
 - Okta never deletes a user. It sends `active` false. Okta sends nothing for a suspended user. Do not hide inactive
   users.
-- Group Push creates a group with POST. New OIN integrations change a group with PATCH, other integrations with PUT.
+- Group Push creates a group with POST. New OIN integrations change a group with PATCH, integrations made with the App
+  Integration Wizard with PUT.
   Okta deletes a group only when the administrator unlinks it and selects the delete option.
 
 ## Other identity providers
@@ -148,7 +152,7 @@ Attributes that you add to the Okta app profile arrive with the same rule as [Un
 
 ## Sources
 
-Read on 2026-11-05 and 2026-11-06.
+Read on 2026-11-05, 2026-11-06 and 2026-11-07.
 
 - Microsoft: [SCIM tutorial](https://learn.microsoft.com/en-us/entra/identity/app-provisioning/use-scim-to-provision-users-and-groups),
   [SCIM compliance flags](https://learn.microsoft.com/en-us/entra/identity/app-provisioning/application-provisioning-config-problem-scim-compatibility),
@@ -157,7 +161,8 @@ Read on 2026-11-05 and 2026-11-06.
   [how provisioning works](https://learn.microsoft.com/en-us/entra/identity/app-provisioning/how-provisioning-works).
 - Okta: [SCIM 2.0 guide](https://developer.okta.com/docs/api/openapi/okta-scim/guides/scim-20/),
   [prepare the SCIM API](https://developer.okta.com/docs/guides/scim-provisioning-integration-prepare/main/),
-  [connect](https://developer.okta.com/docs/guides/scim-provisioning-integration-connect/main/).
+  [connect](https://developer.okta.com/docs/guides/scim-provisioning-integration-connect/main/),
+  [add SCIM provisioning](https://help.okta.com/oie/en-us/content/topics/apps/apps_app_integration_wizard_scim.htm).
 - [JumpCloud](https://jumpcloud.com/support/provision-and-manage-users-and-groups-in-apps-using-custom-scim-identity-management-integration),
   [OneLogin](https://developers.onelogin.com/scim/define-user-schema),
   [PingOne](https://docs.pingidentity.com/pingone/integrations/p1_create_scim_connection.html).

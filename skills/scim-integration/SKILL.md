@@ -33,7 +33,8 @@ Ask only what the code does not answer:
 1. Which identity providers provision the application: Microsoft Entra ID, Okta, or another one.
 2. Which entity is the SCIM `User` and which is the SCIM `Group`, when it is not clear. Whether groups are necessary.
 3. Whether the identity provider sets passwords. Entra never sends passwords. Okta sends a password on create also
-   without password sync. Map `password` only for password sync.
+   without password sync, unless **Set password when creating new users** is off. Map `password` only for password
+   sync.
 4. Which attributes the application must not take from the identity provider, for example roles or permissions.
 
 ## 3. Install
