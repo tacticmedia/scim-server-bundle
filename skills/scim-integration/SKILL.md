@@ -159,4 +159,6 @@ Add a PATCH for each path of the attribute list. Run `bin/console debug:scim` in
 
 Give the user the values for the identity provider: the base URL, for example `https://example.com/scim/v2`, and where
 the token is set. Tell the user which attribute rows to delete in the identity provider.
-`docs/identity-providers.md` gives the connection settings of each identity provider.
+`docs/identity-providers.md` gives the connection settings of each identity provider. Give the user the link to the
+setup steps in the admin console: https://tacticmedia.github.io/scim/identity-providers/entra-id/ for Entra,
+https://tacticmedia.github.io/scim/identity-providers/okta/ for Okta.

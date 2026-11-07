@@ -32,6 +32,9 @@ Federation, use another token handler ([Firewall](index.md#firewall)).
 
 **Test Connection** queries a user by a random GUID. The server answers 200 with an empty `ListResponse`.
 
+[Microsoft Entra ID setup](https://tacticmedia.github.io/scim/identity-providers/entra-id/) gives each step in the
+admin center.
+
 ### User attributes
 
 The Microsoft SCIM tutorial gives these user mappings as an example. The **Attribute mapping** page of the application
@@ -109,6 +112,8 @@ each cycle, so map the attributes before you start provisioning.
 | Authentication Mode | HTTP Header, with a token of `access_tokens` in **Authorization**. The token extractor reads the token with and without `Bearer`. |
 | Unique identifier field for users | `userName`. Okta finds an existing user with `userName eq "..."`. |
 | To App | Create Users, Update User Attributes, Deactivate Users. Sync Password only when the class maps `password`. |
+
+[Okta setup](https://tacticmedia.github.io/scim/identity-providers/okta/) gives each step in the Admin Console.
 
 ### User attributes
 

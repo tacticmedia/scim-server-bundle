@@ -28,7 +28,8 @@ return [
 
 Then set the access tokens, import the route file, add the firewall and map your classes. The
 [documentation](docs/index.md) gives each step. [Identity providers](docs/identity-providers.md) tells what Microsoft
-Entra ID, Okta and other identity providers send, and what to map.
+Entra ID, Okta and other identity providers send, and what to map. The
+[documentation site](https://tacticmedia.github.io/scim/) also has the setup steps for Entra ID and Okta.
 
 ## Coding agents
 
